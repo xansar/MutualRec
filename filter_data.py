@@ -101,14 +101,18 @@ def filter_data(rating_df_filter, link_df_filter):
     """
     while条件的意思分别是：
     (~link_df_filter.user1.isin(rating_df_filter.user)).sum() link.user1中不在rating.user中的数量
+    (~link_df_filter.user2.isin(rating_df_filter.user)).sum() link.user2中不在rating.user中的数量
     (~rating_df_filter.user.isin(link_df_filter.user1)).sum() rating.user中不在link.user1中的数量
+    (~rating_df_filter.user.isin(link_df_filter.user2)).sum() rating.user中不在link.user2中的数量
     (link_df_filter['user1'].value_counts() < 4).sum() link.user1中出现少于4次的数量
     (link_df_filter['user2'].value_counts() < 4).sum() link.user2中出现少于4次的数量
     (rating_df_filter['user'].value_counts() < 4).sum() rating.user中出现少于4次的数量
     (rating_df_filter['item'].value_counts() < 4).sum() rating.item中出现少于4次的数量
     """
     while ((~link_df_filter.user1.isin(rating_df_filter.user)).sum() >= 1) or \
+        ((~link_df_filter.user2.isin(rating_df_filter.user)).sum() >= 1) or \
         ((~rating_df_filter.user.isin(link_df_filter.user1)).sum() >= 1) or \
+        ((~rating_df_filter.user.isin(link_df_filter.user2)).sum() >= 1) or \
         ((link_df_filter['user1'].value_counts() < 4).sum() >= 1) or \
         ((link_df_filter['user2'].value_counts() < 4).sum() >= 1) or \
         ((rating_df_filter['user'].value_counts() < 4).sum() >= 1) or \
@@ -117,15 +121,29 @@ def filter_data(rating_df_filter, link_df_filter):
         # 将link中user1，user2出现少于四次的过滤掉
         link_df_filter = link_df_filter[link_df_filter.groupby('user1').user1.transform('count') >= 4]
         link_df_filter = link_df_filter[link_df_filter.groupby('user2').user2.transform('count') >= 4]
-        # 将rating中只出现在rating.user中，但是没有出现在link.user1中的过滤掉
+        # 将rating中只出现在rating.user中，但是没有出现在link.user1和link.user2中的过滤掉
         rating_df_filter = rating_df_filter[rating_df_filter.user.isin(link_df_filter.user1)]
+        rating_df_filter = rating_df_filter[rating_df_filter.user.isin(link_df_filter.user2)]
+
         # 将rating中user，item出现少于四次的过滤掉
         rating_df_filter = rating_df_filter[rating_df_filter.groupby('user').user.transform('count') >= 4]
         rating_df_filter = rating_df_filter[rating_df_filter.groupby('item').item.transform('count') >= 4]
         # 将link中只出现在link.user1中，但是没有出现在rating.user中的过滤掉
         link_df_filter = link_df_filter[link_df_filter.user1.isin(rating_df_filter.user)]
+        # 将link中只出现在link.user2中，但是没有出现在rating.user中的过滤掉
+        link_df_filter = link_df_filter[link_df_filter.user2.isin(rating_df_filter.user)]
 
         n += 1
+        print(
+            ((~link_df_filter.user1.isin(rating_df_filter.user)).sum()),
+            ((~link_df_filter.user2.isin(rating_df_filter.user)).sum()),
+            ((~rating_df_filter.user.isin(link_df_filter.user1)).sum()),
+            ((~rating_df_filter.user.isin(link_df_filter.user2)).sum()),
+            ((link_df_filter['user1'].value_counts() < 4).sum()),
+            ((link_df_filter['user2'].value_counts() < 4).sum()),
+            ((rating_df_filter['user'].value_counts() < 4).sum()),
+            ((rating_df_filter['item'].value_counts() < 4).sum())
+        )
         if n > 100:
             break
     return rating_df_filter, link_df_filter, n
@@ -145,10 +163,13 @@ def draw_hist_pic(data_df: pd.DataFrame, title):
 
 # pd.read_csv('../dataset/ratings_data.txt')
 rating_df, link_df = read_data('../dataset/ratings_data.txt', '../dataset/trust_data.txt')
-draw_hist_pic(rating_df, 'rating_raw')
-draw_hist_pic(link_df, 'link_raw')
+# draw_hist_pic(rating_df, 'rating_raw')
+# draw_hist_pic(link_df, 'link_raw')
 
-rating_df, link_df, _ = filter_data(rating_df, link_df)
-draw_hist_pic(rating_df, 'rating_new')
-draw_hist_pic(link_df, 'link_new')
+rating_df, link_df, n = filter_data(rating_df, link_df)
+print(n)
+rating_df.to_csv('./data/raw_rating_data.csv', index=False, header=True)
+link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
+# draw_hist_pic(rating_df, 'rating_new')
+# draw_hist_pic(link_df, 'link_new')
 
