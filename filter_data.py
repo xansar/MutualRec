@@ -100,47 +100,52 @@ def filter_data(rating_df_filter, link_df_filter):
 
     """
     while条件的意思分别是：
-    (~link_df_filter.user1.isin(rating_df_filter.user)).sum() link.user1中不在rating.user中的数量
-    (~link_df_filter.user2.isin(rating_df_filter.user)).sum() link.user2中不在rating.user中的数量
-    (~rating_df_filter.user.isin(link_df_filter.user1)).sum() rating.user中不在link.user1中的数量
-    (~rating_df_filter.user.isin(link_df_filter.user2)).sum() rating.user中不在link.user2中的数量
-    (link_df_filter['user1'].value_counts() < 4).sum() link.user1中出现少于4次的数量
-    (link_df_filter['user2'].value_counts() < 4).sum() link.user2中出现少于4次的数量
-    (rating_df_filter['user'].value_counts() < 4).sum() rating.user中出现少于4次的数量
-    (rating_df_filter['item'].value_counts() < 4).sum() rating.item中出现少于4次的数量
+        (~bi_link_df_filter.user1.isin(rating_df_filter.user)).sum() link user总表中不在rating user总表中的数量
+        ((~link_df_filter.user1.isin(bi_link_df_filter.user1)).sum() link.user1中不在link user总表中的数量
+        ((~link_df_filter.user2.isin(bi_link_df_filter.user1)).sum() link.user2中不在link user总表中的数量
+        ((~rating_df_filter.user.isin(bi_link_df_filter.user1)).sum() rating user总表不在link user总表中的数量
+        ((bi_link_df_filter['user1'].value_counts() < 4).sum()  少于四个邻居的数量
+        ((rating_df_filter['user'].value_counts() < 4).sum() rating.user中出现少于4次的数量
+        ((rating_df_filter['item'].value_counts() < 4).sum() rating.item中出现少于4次的数量
     """
-    while ((~link_df_filter.user1.isin(rating_df_filter.user)).sum() >= 1) or \
-        ((~link_df_filter.user2.isin(rating_df_filter.user)).sum() >= 1) or \
-        ((~rating_df_filter.user.isin(link_df_filter.user1)).sum() >= 1) or \
-        ((~rating_df_filter.user.isin(link_df_filter.user2)).sum() >= 1) or \
-        ((link_df_filter['user1'].value_counts() < 4).sum() >= 1) or \
-        ((link_df_filter['user2'].value_counts() < 4).sum() >= 1) or \
+    # 每条边正反都录入一次，把有向变无向
+    bi_link_df_filter = process_link(link_df_filter)
+
+    while ((~bi_link_df_filter.user1.isin(rating_df_filter.user)).sum() >= 1) or \
+        ((~link_df_filter.user1.isin(bi_link_df_filter.user1)).sum() >= 1) or \
+        ((~link_df_filter.user2.isin(bi_link_df_filter.user1)).sum() >= 1) or \
+        ((~rating_df_filter.user.isin(bi_link_df_filter.user1)).sum() >= 1) or \
+        ((bi_link_df_filter['user1'].value_counts() < 4).sum() >= 1) or \
         ((rating_df_filter['user'].value_counts() < 4).sum() >= 1) or \
         ((rating_df_filter['item'].value_counts() < 4).sum() >= 1):
 
-        # 将link中user1，user2出现少于四次的过滤掉
-        link_df_filter = link_df_filter[link_df_filter.groupby('user1').user1.transform('count') >= 4]
-        link_df_filter = link_df_filter[link_df_filter.groupby('user2').user2.transform('count') >= 4]
-        # 将rating中只出现在rating.user中，但是没有出现在link.user1和link.user2中的过滤掉
-        rating_df_filter = rating_df_filter[rating_df_filter.user.isin(link_df_filter.user1)]
-        rating_df_filter = rating_df_filter[rating_df_filter.user.isin(link_df_filter.user2)]
+        # 所有用户至少有四个邻居
+        bi_link_df_filter = bi_link_df_filter[bi_link_df_filter.groupby('user1').user1.transform('count') >= 4]
 
         # 将rating中user，item出现少于四次的过滤掉
         rating_df_filter = rating_df_filter[rating_df_filter.groupby('user').user.transform('count') >= 4]
         rating_df_filter = rating_df_filter[rating_df_filter.groupby('item').item.transform('count') >= 4]
-        # 将link中只出现在link.user1中，但是没有出现在rating.user中的过滤掉
-        link_df_filter = link_df_filter[link_df_filter.user1.isin(rating_df_filter.user)]
-        # 将link中只出现在link.user2中，但是没有出现在rating.user中的过滤掉
-        link_df_filter = link_df_filter[link_df_filter.user2.isin(rating_df_filter.user)]
+
+        # 将在rating user表，不在link user表的过滤掉
+        rating_df_filter = rating_df_filter[rating_df_filter.user.isin(bi_link_df_filter.user1)]
+
+        # 将在link user表，不在rating user表的过滤掉
+        bi_link_df_filter = bi_link_df_filter[bi_link_df_filter.user1.isin(rating_df_filter.user)]
+
+        # 将不在link总表的过滤掉
+        link_df_filter = link_df_filter[link_df_filter.user1.isin(bi_link_df_filter.user1)]
+        link_df_filter = link_df_filter[link_df_filter.user2.isin(bi_link_df_filter.user1)]
+
+        # 更新无向边link表
+        bi_link_df_filter = process_link(link_df_filter)
 
         n += 1
         print(
-            ((~link_df_filter.user1.isin(rating_df_filter.user)).sum()),
-            ((~link_df_filter.user2.isin(rating_df_filter.user)).sum()),
-            ((~rating_df_filter.user.isin(link_df_filter.user1)).sum()),
-            ((~rating_df_filter.user.isin(link_df_filter.user2)).sum()),
-            ((link_df_filter['user1'].value_counts() < 4).sum()),
-            ((link_df_filter['user2'].value_counts() < 4).sum()),
+            ((~bi_link_df_filter.user1.isin(rating_df_filter.user)).sum()),
+            ((~link_df_filter.user1.isin(bi_link_df_filter.user1)).sum()),
+            ((~link_df_filter.user2.isin(bi_link_df_filter.user1)).sum()),
+            ((~rating_df_filter.user.isin(bi_link_df_filter.user1)).sum()),
+            ((bi_link_df_filter['user1'].value_counts() < 4).sum()),
             ((rating_df_filter['user'].value_counts() < 4).sum()),
             ((rating_df_filter['item'].value_counts() < 4).sum())
         )
@@ -148,28 +153,64 @@ def filter_data(rating_df_filter, link_df_filter):
             break
     return rating_df_filter, link_df_filter, n
 
-def draw_hist_pic(data_df: pd.DataFrame, title):
-    fig = plt.figure(figsize=(15, 10))
-    # plt.title(title)
-    for i, key in enumerate(data_df.columns):
-        ax = fig.add_subplot(2, 2, i + 1)
-        ax.hist(data_df[key])
-        ax.set_title(key)
-        ax.set_xlabel('idx')
-        ax.set_ylabel('count')
+def draw_freq_dist_pic(df, name1, name2, step=100):
+    name1_freq_series = df[name1].value_counts().sort_values(ascending=False)
+    name1_freq = list(name1_freq_series.values)[0::step]
+
+    name2_freq_series = df[name2].value_counts().sort_values(ascending=False)
+    name2_freq = list(name2_freq_series.values)[0::step]
+
+    fig = plt.figure(figsize=(8, 4.5))
+    ax = fig.add_subplot(1, 2, 1)
+    ax.set_title(name1 + ' freq')
+    x_lim_num = [0, 25, 50, 75, 100, 125]
+    x_ticks = ['0', '2500', '5000', '7500', '10000', '12500']
+    ax.bar(list(range(1, len(name1_freq) + 1)), name1_freq)
+    ax.set_xticks(x_lim_num, x_ticks)
+
+    ax = fig.add_subplot(1, 2, 2)
+    ax.set_title(name2 + ' freq')
+    # ax.set_ylim((0, 1500))
+    x_lim_num = [0, 50, 100, 150, 200]
+    x_ticks = ['0', '5000', '10000', '15000', '20000']
+    ax.bar(range(1, len(name2_freq) + 1), name2_freq)
+    ax.set_xticks(x_lim_num, x_ticks)
 
     plt.show()
 
+def process_link(df, name1='user1', name2='user2'):
+    cpy = df.copy()
+    cpy[name1], cpy[name2] = cpy[name2], cpy[name1]
+    res = pd.concat([df, cpy], axis=0)
+    return res.drop_duplicates().reset_index().drop(columns=['index']).copy()
 
-# pd.read_csv('../dataset/ratings_data.txt')
-rating_df, link_df = read_data('../dataset/ratings_data.txt', '../dataset/trust_data.txt')
+if __name__ == '__main__':
+
+    # pd.read_csv('../dataset/ratings_data.txt')
+# rating_df, link_df = read_data('../dataset/ratings_data.txt', '../dataset/trust_data.txt')
+# print(link_df.describe())
 # draw_hist_pic(rating_df, 'rating_raw')
 # draw_hist_pic(link_df, 'link_raw')
 
-rating_df, link_df, n = filter_data(rating_df, link_df)
-print(n)
-rating_df.to_csv('./data/raw_rating_data.csv', index=False, header=True)
-link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
+# rating_df, link_df, n = filter_data(rating_df, link_df)
+# print(n)
+# rating_df.to_csv('./data/raw_rating_data.csv', index=False, header=True)
+# link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
 # draw_hist_pic(rating_df, 'rating_new')
 # draw_hist_pic(link_df, 'link_new')
 
+
+# rating_df = pd.read_csv('./data/rating_data.csv')
+# draw_freq_dist_pic(rating_df, 'user', 'item')
+
+    link_df = pd.read_csv('./data/link_data.csv')
+    tmp = pd.concat([link_df.user1, link_df.user2], axis=0).value_counts().sort_values(ascending=False)
+    print(tmp.head())
+    freqs = list(tmp.values)[0::50]
+    x = list(range(1, len(freqs) + 1))
+    x_lim_num = [0, 50, 100, 150, 200, 250]
+    x_ticks = ['0', '2500', '5000', '7500', '10000', '12500']
+    plt.bar(x, freqs)
+    plt.title('user social freq')
+    plt.xticks(x_lim_num, x_ticks)
+    plt.show()
