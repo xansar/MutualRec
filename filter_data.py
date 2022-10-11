@@ -86,8 +86,8 @@ def filter_data(rating_df_filter, link_df_filter):
     """
     对数据集进行迭代过滤
     保证：
-        1. rating数据中的user和link数据中的user1集合完全一致
-        2. rating中的user和item出现次数不少于4次，link中的user1不少于4次
+        1. rating数据中的user和link数据中的user1，user2集合的合集完全一致
+        2. rating中的user和item出现次数不少于4次，link数据中的user1，user2不少于4次
     :param link_df_filter: 社交关系表，每条信息是[user1, user2, weight]，weight=0/1
     :type link_df_filter: DataFrame
     :param rating_df_filter: 评分表，每条信息是[user, item, rating]，rating=1-5
