@@ -16,7 +16,7 @@ import bisect
 import json
 
 if __name__ == '__main__':
-    rating_df = pd.read_csv('./data/rating_data.csv')
+    rating_df = pd.read_csv('data/rate_data.csv')
     user_consume_dict = {}
     item_consumed_dict = {}
     for row in rating_df.itertuples():
@@ -34,7 +34,7 @@ if __name__ == '__main__':
 
     print(user_consume_dict)
     print(item_consumed_dict)
-    with open('./data/rating_reverse_table.json', 'w') as f:
+    with open('data/rate_reverse_table.json', 'w') as f:
         json.dump({'user_consume_dict': user_consume_dict, 'item_consumed_dict': item_consumed_dict}, f, indent=2)
 
     # link_df = pd.read_csv('./data/link_data.csv')

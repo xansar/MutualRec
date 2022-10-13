@@ -194,13 +194,13 @@ if __name__ == '__main__':
 
 # rating_df, link_df, n = filter_data(rating_df, link_df)
 # print(n)
-# rating_df.to_csv('./data/raw_rating_data.csv', index=False, header=True)
+# rating_df.to_csv('./data/raw_rate_data.csv', index=False, header=True)
 # link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
 # draw_hist_pic(rating_df, 'rating_new')
 # draw_hist_pic(link_df, 'link_new')
 
 
-# rating_df = pd.read_csv('./data/rating_data.csv')
+# rating_df = pd.read_csv('./data/rate_data.csv')
 # draw_freq_dist_pic(rating_df, 'user', 'item')
 
     link_df = pd.read_csv('./data/link_data.csv')

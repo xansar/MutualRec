@@ -23,7 +23,7 @@ def process_link(df, name1='user1', name2='user2'):
 
 if __name__ == '__main__':
 
-    rating_df = pd.read_csv('./data/raw_rating_data.csv', sep=',')
+    rating_df = pd.read_csv('data/raw_rate_data.csv', sep=',')
     link_df = pd.read_csv('./data/raw_link_data.csv', sep=',')
 
     # 保证rating和link里面的user一致
@@ -80,7 +80,7 @@ if __name__ == '__main__':
     new_rating_df = rating_df.copy()
     new_rating_df['user'] = new_rating_df['user'].apply(lambda x: user_raw_idx2new_idx[x])
     new_rating_df['item'] = new_rating_df['item'].apply(lambda x: item_raw_idx2new_idx[x])
-    new_rating_df.to_csv('./data/rating_data.csv', index=False, header=True)
+    new_rating_df.to_csv('./data/rate_data.csv', index=False, header=True)
 
     new_link_df = link_df.copy()
     new_link_df['user1'] = new_link_df['user1'].apply(lambda x: user_raw_idx2new_idx[x])
