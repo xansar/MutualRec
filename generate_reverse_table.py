@@ -6,7 +6,7 @@
 
 @Modify Time      @Author    @Version    @Desciption
 ------------      -------    --------    -----------
-2022/10/11 14:22   zxx      1.0         None
+2022/10/11 14:22   zxx      1.0         生成倒排表
 """
 
 # import lib
