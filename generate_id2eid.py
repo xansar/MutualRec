@@ -36,10 +36,10 @@ if __name__ == '__main__':
     #     json.dump(user_consume_dict, f, indent=2)
 
     link_df = pd.read_csv('./data/link_data.csv')
-    bi_link_df = process_link(link_df)
-    bi_link_df.to_csv('./data/bi_link_data.csv', index=False, header=True)
+    # bi_link_df = process_link(link_df)
+    # bi_link_df.to_csv('./data/bi_link_data.csv', index=False, header=True)
     user_social_dict = {}
-    for row in bi_link_df.itertuples():
+    for row in link_df.itertuples():
         u1 = getattr(row, 'user1')
         u2 = getattr(row, 'user2')
         idx = getattr(row, 'Index')

@@ -34,7 +34,7 @@ class Epinions(DGLDataset):
         dgl.save_graphs(os.path.join(self._data_pth, 'graph.bin'), self._g)
 
     def read_mask(self, mode, fold=1):
-        mask_pth = os.path.join(self._data_pth, f'data4run/{mode}_fold_{fold}.npz')
+        mask_pth = os.path.join(self._data_pth, f'mask4run/{mode}_fold_{fold}.npz')
         npzfile = np.load(mask_pth)
         # 构建train mask
         train_mask = torch.zeros(self._g.num_edges(mode))
@@ -55,7 +55,7 @@ class Epinions(DGLDataset):
         i = rate_df['item'].values
         print('=' * 20 + 'read rate data finished' + '=' * 20)
 
-        link_data_name = 'bi_link_data.csv'
+        link_data_name = 'link_data.csv'
         link_df = pd.read_csv(os.path.join(self._data_pth, link_data_name))
         u1 = link_df['user1'].values
         u2 = link_df['user2'].values
@@ -64,7 +64,8 @@ class Epinions(DGLDataset):
         graph_data = {
             ('user', 'rate', 'item'): (u, i),
             ('item', 'rated', 'user'): (i, u),
-            ('user', 'link', 'user'): (u1, u2)
+            ('user', 'link', 'user'): (u1, u2),
+            ('user', 'linked', 'user'): (u2, u1)
         }
         self._g = dgl.heterograph(graph_data)
         self.read_mask('rate')
