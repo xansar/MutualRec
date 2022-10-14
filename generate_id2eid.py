@@ -18,7 +18,7 @@ def process_link(df, name1='user1', name2='user2'):
     cpy = df.copy()
     cpy[name1], cpy[name2] = cpy[name2], cpy[name1]
     res = pd.concat([df, cpy], axis=0)
-    return res.drop_duplicates().reset_index().drop(columns=['index']).copy()
+    return res.reset_index().drop(columns=['index']).copy()
 
 if __name__ == '__main__':
     # rating_df = pd.read_csv('./data/rate_data.csv')
@@ -35,9 +35,9 @@ if __name__ == '__main__':
     # with open('./data/rate_user2edge.json', 'w') as f:
     #     json.dump(user_consume_dict, f, indent=2)
 
-    link_df = pd.read_csv('./data/link_data.csv')
-    # bi_link_df = process_link(link_df)
-    # bi_link_df.to_csv('./data/bi_link_data.csv', index=False, header=True)
+    link_df = pd.read_csv('./data/single_link_data.csv')
+    bi_link_df = process_link(link_df)
+    bi_link_df.to_csv('./data/bi_link_data.csv', index=False, header=True)
     user_social_dict = {}
     for row in link_df.itertuples():
         u1 = getattr(row, 'user1')

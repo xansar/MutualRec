@@ -74,6 +74,7 @@ if __name__ == '__main__':
     for i in range(len(train_masks_lst)):
         save_dict = {'train': train_masks_lst[i], 'test': test_masks_lst[i]}
         np.savez(f'./data/mask4run/link_fold_{i + 1}', **save_dict)
+    print(train_masks_lst)
     print(test_masks_lst)
 
 

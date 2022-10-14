@@ -11,6 +11,7 @@
 
 import dgl
 import dgl.nn.pytorch as dglnn
+import dgl.function as fn
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,7 +21,7 @@ class SpatialAttentionLayer_GAT(nn.Module):
     def __init__(self, embedding_size=1, num_heads=1, rel_names=None):
         super(SpatialAttentionLayer_GAT, self).__init__()
         if rel_names is None:
-            rel_names = ['rate', 'rated', 'friend']
+            rel_names = ['rate', 'rated-by', 'link']
         self.gat_layer_1 = dglnn.HeteroGraphConv(
             {
                 rel: dglnn.GATv2Conv(embedding_size, embedding_size, num_heads=num_heads)
@@ -128,13 +129,34 @@ class PredictionLayer(nn.Module):
         h_new_P = self.mutual_pref_mlp(h_miu_mP)
         h_new_S = self.mutual_social_mlp(h_miu_mS)
 
-        item_embed = inputs['item_embed']
-        user_embed = inputs['user_embed']
+        return h_new_P, h_new_S
 
-        r_hat = torch.matmul(h_new_P, item_embed.t())
-        s_hat = torch.matmul(h_new_S, user_embed.t())
+class HeteroDotProductPredictor(nn.Module):
+    def forward(self, graph, metatype, **embed):
+        # h是从5.1节中对异构图的每种类型的边所计算的节点表示
+        u_type, etype, v_type = metatype
+        with graph.local_scope():
+            if etype == 'rate':
+                u_embed = embed['h_new_P']
+                v_embed = embed['i_embed']
+            elif etype == 'link':
+                u_embed = embed['h_new_S']
+                v_embed = embed['u_embed']
+            else:
+                raise ValueError("Wrong Etype!!")
+            graph.nodes[u_type].data['h'] = u_embed
+            graph.nodes[v_type].data['h'] = v_embed
+            graph.apply_edges(fn.u_dot_v('h', 'h', 'score'), etype=etype)
+            return graph.edges[etype].data['score']
+class BPRLoss(nn.Module):
+    def __init__(self, balance_factor=10):
+        self.balance_factor = balance_factor
+        super(BPRLoss, self).__init__()
 
-        return r_hat, s_hat
+    def forward(self, pos_rate_score, neg_rate_score, pos_link_score, neg_link_score):
+        rate_loss = torch.sum(-torch.log(torch.sigmoid(pos_rate_score - neg_rate_score)))
+        link_loss = torch.sum(-torch.log(torch.sigmoid(pos_link_score - neg_link_score)))
+        return rate_loss * self.balance_factor, link_loss
 
 class MutualRec(nn.Module):
     def __init__(self, embedding_size=1, num_heads=1, kernel_nums=3, n_nums=None):
@@ -148,8 +170,10 @@ class MutualRec(nn.Module):
         self.mutualistic_layer = MutualisicLayer(embedding_size)
         self.prediction_layer = PredictionLayer(embedding_size)
 
+        self.predictor = HeteroDotProductPredictor()
 
-    def forward(self, g, social_networks, laplacian_lambda_max):
+
+    def forward(self, g, train_pos_g, train_neg_g, social_networks, laplacian_lambda_max):
         # user_embed = torch.ones_like(g.nodes['user'].data['feat'])
         # item_embed = torch.ones_like(g.nodes['item'].data['feat'])
         user_item_embed = self.embedding({'user': g.nodes('user'), 'item': g.nodes('item')})
@@ -166,101 +190,113 @@ class MutualRec(nn.Module):
 
         h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_pref_embed, user_social_embed)
 
-        r_hat, s_hat = self.prediction_layer(
+        h_new_P, h_new_S = self.prediction_layer(
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
-            user_embed = user_embed,
-            item_embed = item_embed
         )
-        return r_hat, s_hat
+        pos_rate_score = self.predictor(train_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
+        neg_rate_score = self.predictor(train_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
-class MutualRecLoss(nn.Module):
-    def __init__(self):
-        super(MutualRecLoss, self).__init__()
+        pos_link_score = self.predictor(train_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
+        neg_link_score = self.predictor(train_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
+        return pos_rate_score, neg_rate_score, pos_link_score, neg_link_score
 
-    def forward(self, **inputs):
-        rate_pred = inputs['rate_pred']
-        link_pred = inputs['link_pred']
-
-        pos_u = inputs['pos_edges']['pos_u']
-        pos_i = inputs['pos_edges']['pos_i']
-        pos_u1 = inputs['pos_edges']['pos_u1']
-        pos_u2 = inputs['pos_edges']['pos_u2']
-
-        neg_u = inputs['neg_edges']['neg_u']
-        neg_i = inputs['neg_edges']['neg_i']
-        neg_u1 = inputs['neg_edges']['neg_u1']
-        neg_u2 = inputs['neg_edges']['neg_u2']
-
-        pos_rate = rate_pred[pos_u, pos_i]
-        pos_link = link_pred[pos_u1, pos_u2]
-
-        neg_rate = rate_pred[neg_u, neg_i]
-        neg_link = link_pred[neg_u1, neg_u2]
-
-        loss = torch.sum(-torch.log(torch.sigmoid(pos_rate - neg_rate))) - torch.sum(torch.log(torch.sigmoid(pos_link - neg_link)))
-        return loss
-
-def generate_neg_edges(g, neg_sampler):
-    neg_edges = neg_sampler(g, eids={'friend': torch.arange(g.number_of_edges('friend')),
-                         'rate': torch.arange(g.number_of_edges('rate'))})
-
-    neg_rate_u, neg_rate_i = neg_edges[('user', 'rate', 'item')]
-    neg_link_u1, neg_link_u2 = neg_edges[('user', 'friend', 'user')]
-
-
-    neg_edges = {
-        'neg_u': neg_rate_u,
-        'neg_i': neg_rate_i,
-        'neg_u1': neg_link_u1,
-        'neg_u2': neg_link_u2,
+def generate_pos_neg_g(rate_dict, link_dict, mode='train'):
+    pos_u, pos_i = rate_dict['pos'][mode]
+    pos_u1, pos_u2 = link_dict['pos'][mode]
+    neg_u, neg_i = rate_dict['neg'][mode]
+    neg_u1, neg_u2 = link_dict['neg'][mode]
+    pos_graph_data = {
+    ('user', 'rate', 'item'): (pos_u, pos_i),
+    ('item', 'rated-by', 'user'): (pos_i, pos_u),
+    ('user', 'link', 'user'): (pos_u1, pos_u2),
+}
+    neg_graph_data = {
+        ('user', 'rate', 'item'): (neg_u, neg_i),
+        ('item', 'rated-by', 'user'): (neg_i, neg_u),
+        ('user', 'link', 'user'): (neg_u1, neg_u2),
     }
-    return neg_edges
+    pos_g = dgl.heterograph(pos_graph_data)
+    neg_g = dgl.heterograph(neg_graph_data)
+    return pos_g, neg_g
 
-if __name__ == '__main__':
-    u1 = torch.tensor([0, 0, 1, 2, 3, 3, 4])
-    i = torch.tensor([0, 1, 1, 2, 2, 3, 3])
-    u2 = torch.tensor([1, 2, 3, 4, 0, 2, 0])
+def get_pos_neg_edges(g, u, v, train_mask, test_mask, etype):
+    train_pos_u, train_pos_v = u[train_mask], v[train_mask]
+    test_pos_u, test_pos_v = u[test_mask], v[test_mask]
+
+    # neg
+    adj = torch.sparse_coo_tensor(torch.vstack([u, v]), torch.ones(len(u)))
+    adj_neg = 1 - adj.to_dense()
+    if etype == 'link':
+        adj_neg -= torch.diag_embed(torch.diag(adj_neg))
+    neg_u, neg_v = torch.where(adj_neg != 0)
+    neg_eids = np.random.choice(len(neg_u), g.number_of_edges(etype))
+    test_size = len(test_pos_u)
+    test_neg_u, test_neg_v = neg_u[neg_eids[:test_size]], neg_v[neg_eids[:test_size]]
+    train_neg_u, train_neg_v = neg_u[neg_eids[test_size:]], neg_v[neg_eids[test_size:]]
+    assert len(train_neg_u) == len(train_pos_u)
+    return {
+        'pos': {
+            'train': (train_pos_u, train_pos_v),
+            'test': (test_pos_u, test_pos_v),
+        },
+        'neg': {
+            'train': (train_neg_u, train_neg_v),
+            'test': (test_neg_u, test_neg_v),
+        }
+    }
+
+def prepare_debug_data():
+    u1 = torch.tensor([0, 0, 1, 1, 2, 3, 3, 4])
+    i = torch.tensor([0, 0, 1, 1, 2, 3, 3, 4])
+    u2 = torch.tensor([1, 2, 2, 3, 3, 4, 0, 0])
     social_u = torch.cat([u1, u2])
     social_v = torch.cat([u2, u1])
     graph_data = {
         ('user', 'rate', 'item'): (u1, i),
-        ('item', 'rated', 'user'): (i, u1),
-        ('user', 'friend', 'user'): (social_u, social_v)
+        ('item', 'rated-by', 'user'): (i, u1),
+        ('user', 'link', 'user'): (social_u, social_v)
     }
     g = dgl.heterograph(graph_data)
 
-    social_networks = dgl.edge_type_subgraph(g, [('user', 'friend', 'user')])
+    u, i = g.edges(etype='rate')
+    train_rate_mask = torch.tensor([0, 2, 4, 5, 7])
+    test_rate_mask = torch.tensor([1, 3, 6])
+    rate_dict = get_pos_neg_edges(g, u, i, train_rate_mask, test_rate_mask, etype='rate')
+
+    u, i = g.edges(etype='link')
+    train_link_mask = torch.tensor([0, 2, 4, 5, 7, 8, 10, 12, 13, 15])
+    test_link_mask = torch.tensor([1, 3, 6, 9, 11, 14])
+    link_dict = get_pos_neg_edges(g, u, i, train_link_mask, test_link_mask, etype='link')
+
+    train_pos_g, train_neg_g = generate_pos_neg_g(rate_dict, link_dict, 'train')
+    test_pos_g, test_neg_g = generate_pos_neg_g(rate_dict, link_dict, 'test')
+
+    train_g = dgl.remove_edges(g, test_rate_mask, 'rate')
+    train_g = dgl.remove_edges(train_g, test_rate_mask, 'rated-by')
+    train_g = dgl.remove_edges(train_g, test_link_mask, 'link')
+
+    social_networks = dgl.edge_type_subgraph(train_g, [('user', 'link', 'user')])
 
     laplacian_lambda_max = torch.tensor(dgl.laplacian_lambda_max(social_networks), dtype=torch.float32)
+    return train_g, train_pos_g, train_neg_g, social_networks, laplacian_lambda_max
 
-    rating_gt = torch.sparse_coo_tensor(torch.vstack([u1, i]), torch.ones_like(u1), (5, 4), dtype=torch.float32).to_dense()
-    link_gt = torch.sparse_coo_tensor(torch.vstack([social_u, social_v]), torch.ones_like(social_u), (5, 5), dtype=torch.float32).to_dense()
-
-    neg_sampler = dgl.dataloading.negative_sampler.GlobalUniform(k=1, exclude_self_loops=True, replace=True)
-
-    pos_rate_u, pos_rate_i = g.edges(etype='rate')
-    pos_link_u1, pos_link_u2 = g.edges(etype='friend')
-    pos_edges = {
-        'pos_u': pos_rate_u,
-        'pos_i': pos_rate_i,
-        'pos_u1': pos_link_u1,
-        'pos_u2': pos_link_u2,
+if __name__ == '__main__':
+    train_g, train_pos_g, train_neg_g, social_networks, laplacian_lambda_max = prepare_debug_data()
+    nodes_nums = {
+        'user': train_g.num_nodes('user'),
+        'item': train_g.num_nodes('item'),
     }
 
-    model = MutualRec(embedding_size=10)
-    loss_func = MutualRecLoss()
+    model = MutualRec(embedding_size=10, n_nums=nodes_nums)
+    loss_func = BPRLoss()
     optimizer = torch.optim.Adam(lr=1e-3, params=model.parameters())
-    for i in range(150):
-        neg_edges = generate_neg_edges(g, neg_sampler)
+    for i in range(500):
         optimizer.zero_grad()
-        rate_pred, link_pred = model(g, social_networks, laplacian_lambda_max)
-        loss = loss_func(
-            rate_pred=rate_pred,
-            link_pred=link_pred,
-            pos_edges=pos_edges,
-            neg_edges=neg_edges
-        )
+        pos_rate_score, neg_rate_score, pos_link_score, neg_link_score = model(
+            train_g, train_pos_g, train_neg_g, social_networks, laplacian_lambda_max)
+        rate_loss, link_loss = loss_func(pos_rate_score, neg_rate_score, pos_link_score, neg_link_score)
+        loss = rate_loss + link_loss
         loss.backward()
         optimizer.step()
-        print(f'epoch: {i}\tloss: {loss.item()}')
+        print(f'epoch:{i + 1}\tloss:{loss.item()}\trate:{rate_loss.item()}\tlink:{link_loss.item()}')
