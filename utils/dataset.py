@@ -17,7 +17,7 @@ import os
 import numpy as np
 
 class Epinions(DGLDataset):
-    def __init__(self, name='epinions', data_pth='../data/'):
+    def __init__(self, name='epinions', data_pth='./data/'):
         self._g = None
         self._data_pth = data_pth
         self.train_mask = dict()

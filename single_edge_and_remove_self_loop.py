@@ -35,7 +35,12 @@ if __name__ == '__main__':
     mask = torch.triu(torch.ones(user_N, user_N), diagonal=1).to_sparse_coo()
     res = adj * mask
     to_pd = torch.vstack([res.indices(), res.values()])
-    to_pd = to_pd.long()
-    link = pd.DataFrame(to_pd.t(), columns={'user1', 'user2', 'weight'})
+    to_pd = to_pd.long().t().numpy()
+    d = {
+        'user1': to_pd[:, 0],
+        'user2': to_pd[:, 1],
+        'weight': to_pd[:, 2]
+    }
+    link = pd.DataFrame(d)
     print(link.describe())
     link.to_csv('./data/single_link_data.csv', index=False, header=True)

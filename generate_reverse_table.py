@@ -37,21 +37,21 @@ if __name__ == '__main__':
     with open('data/rate_reverse_table.json', 'w') as f:
         json.dump({'user_consume_dict': user_consume_dict, 'item_consumed_dict': item_consumed_dict}, f, indent=2)
 
-    # link_df = pd.read_csv('./data/link_data.csv')
-    # user_social_dict = {}
-    # for row in link_df.itertuples():
-    #     u1 = getattr(row, 'user1')
-    #     u2 = getattr(row, 'user2')
-    #     if u1 in user_social_dict.keys():
-    #         bisect.insort(user_social_dict[u1], u2)
-    #     else:
-    #         user_social_dict[u1] = [u2]
-    #
-    #     if u2 in user_social_dict.keys():
-    #         bisect.insort(user_social_dict[u2], u1)
-    #     else:
-    #         user_social_dict[u2] = [u1]
-    #
-    # print(user_social_dict)
-    # with open('./data/link_reverse_table.json', 'w') as f:
-    #     json.dump({'user_social_dict': user_social_dict}, f, indent=2)
+    link_df = pd.read_csv('./data/single_link_data.csv')
+    user_social_dict = {}
+    for row in link_df.itertuples():
+        u1 = getattr(row, 'user1')
+        u2 = getattr(row, 'user2')
+        if u1 in user_social_dict.keys():
+            bisect.insort(user_social_dict[u1], u2)
+        else:
+            user_social_dict[u1] = [u2]
+
+        if u2 in user_social_dict.keys():
+            bisect.insort(user_social_dict[u2], u1)
+        else:
+            user_social_dict[u2] = [u1]
+
+    print(user_social_dict)
+    with open('./data/link_reverse_table.json', 'w') as f:
+        json.dump({'user_social_dict': user_social_dict}, f, indent=2)

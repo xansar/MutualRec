@@ -112,6 +112,7 @@ def filter_data(rating_df_filter, link_df_filter):
     bi_link_df_filter = process_link(link_df_filter)
 
     while ((~bi_link_df_filter.user1.isin(rating_df_filter.user)).sum() >= 1) or \
+            (link_df_filter.user1 == link_df_filter.user2).sum() >= 1 or\
         ((~link_df_filter.user1.isin(bi_link_df_filter.user1)).sum() >= 1) or \
         ((~link_df_filter.user2.isin(bi_link_df_filter.user1)).sum() >= 1) or \
         ((~rating_df_filter.user.isin(bi_link_df_filter.user1)).sum() >= 1) or \
@@ -119,8 +120,11 @@ def filter_data(rating_df_filter, link_df_filter):
         ((rating_df_filter['user'].value_counts() < 4).sum() >= 1) or \
         ((rating_df_filter['item'].value_counts() < 4).sum() >= 1):
 
+        # # 去掉自环
+        # bi_link_df_filter = bi_link_df_filter[~(bi_link_df_filter.user1 == bi_link_df_filter.user2)]
         # 所有用户至少有四个邻居
         bi_link_df_filter = bi_link_df_filter[bi_link_df_filter.groupby('user1').user1.transform('count') >= 4]
+
 
         # 将rating中user，item出现少于四次的过滤掉
         rating_df_filter = rating_df_filter[rating_df_filter.groupby('user').user.transform('count') >= 4]
@@ -135,6 +139,7 @@ def filter_data(rating_df_filter, link_df_filter):
         # 将不在link总表的过滤掉
         link_df_filter = link_df_filter[link_df_filter.user1.isin(bi_link_df_filter.user1)]
         link_df_filter = link_df_filter[link_df_filter.user2.isin(bi_link_df_filter.user1)]
+        link_df_filter = link_df_filter[~(link_df_filter.user1 == link_df_filter.user2)]
 
         # 更新无向边link表
         bi_link_df_filter = process_link(link_df_filter)
@@ -142,6 +147,7 @@ def filter_data(rating_df_filter, link_df_filter):
         n += 1
         print(
             ((~bi_link_df_filter.user1.isin(rating_df_filter.user)).sum()),
+            (link_df_filter.user1 == link_df_filter.user2).sum(),
             ((~link_df_filter.user1.isin(bi_link_df_filter.user1)).sum()),
             ((~link_df_filter.user2.isin(bi_link_df_filter.user1)).sum()),
             ((~rating_df_filter.user.isin(bi_link_df_filter.user1)).sum()),
@@ -185,19 +191,13 @@ def process_link(df, name1='user1', name2='user2'):
     return res.drop_duplicates().reset_index().drop(columns=['index']).copy()
 
 if __name__ == '__main__':
+    rating_df, link_df = read_data('../dataset/ratings_data.txt', '../dataset/trust_data.txt')
+    print(link_df.describe())
 
-    # pd.read_csv('../dataset/ratings_data.txt')
-# rating_df, link_df = read_data('../dataset/ratings_data.txt', '../dataset/trust_data.txt')
-# print(link_df.describe())
-# draw_hist_pic(rating_df, 'rating_raw')
-# draw_hist_pic(link_df, 'link_raw')
-
-# rating_df, link_df, n = filter_data(rating_df, link_df)
-# print(n)
-# rating_df.to_csv('./data/raw_rate_data.csv', index=False, header=True)
-# link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
-# draw_hist_pic(rating_df, 'rating_new')
-# draw_hist_pic(link_df, 'link_new')
+    rating_df, link_df, n = filter_data(rating_df, link_df)
+    print(n)
+    rating_df.to_csv('./data/raw_rate_data.csv', index=False, header=True)
+    link_df.to_csv('./data/raw_link_data.csv', index=False, header=True)
 
 
 # rating_df = pd.read_csv('./data/rate_data.csv')

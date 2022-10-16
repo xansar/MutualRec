@@ -60,13 +60,13 @@ if __name__ == '__main__':
     # }
     # print(id2eid)
 
-    # with open('./data/rate_user2edge.json', 'r') as f:
-    #     id2eid = json.load(f)
-    # train_masks_lst, test_masks_lst = generate_masks(id2eid, num_folds)
-    # for i in range(len(train_masks_lst)):
-    #     save_dict = {'train': train_masks_lst[i], 'test': test_masks_lst[i]}
-    #     np.savez(f'data/mask4run/rate_fold_{i + 1}', **save_dict)
-    # print(test_masks_lst)
+    with open('./data/rate_user2edge.json', 'r') as f:
+        id2eid = json.load(f)
+    train_masks_lst, test_masks_lst = generate_masks(id2eid, num_folds)
+    for i in range(len(train_masks_lst)):
+        save_dict = {'train': train_masks_lst[i], 'test': test_masks_lst[i]}
+        np.savez(f'data/mask4run/rate_fold_{i + 1}', **save_dict)
+    print(test_masks_lst)
 
     with open('./data/link_user2edge.json', 'r') as f:
         id2eid = json.load(f)

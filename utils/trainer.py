@@ -8,21 +8,26 @@
 ------------      -------    --------    -----------
 2022/10/13 15:41   zxx      1.0         None
 """
+import json
 
 import torch
+import dgl
 import numpy as np
-from dataset import Epinions
 from tqdm import tqdm
 import pickle
 
 class Trainer:
-    def __init__(self, model, loss_func, optimizer, metric, dataset: Epinions, config):
+    def __init__(self, model, loss_func, optimizer, metric, dataset, config):
         self.config = config
         self.random_seed = eval(self.config['TRAIN']['random_seed'])
-        self.log_pth = self.config['TRAIN']['log_pth'] + str(self.random_seed) + '_njm_torch.txt'
+        self.log_pth = self.config['TRAIN']['log_pth'] + str(self.random_seed) + '_MutualRec.txt'
         self.print_config()
         self.dataset = dataset
         self.g = dataset[0]
+        self.num_nodes_dict = {
+            'user': self.g.number_of_nodes('user'),
+            'item': self.g.number_of_nodes('item')
+        }
         self.train_g = None
         self.model = model
         self.loss_func = loss_func
@@ -56,7 +61,7 @@ class Trainer:
         if etype == 'link':
             adj_neg -= torch.diag_embed(torch.diag(adj_neg))
         neg_u, neg_v = torch.where(adj_neg != 0)
-        neg_eids = np.random.choice(len(neg_u), g.number_of_edges(etype))
+        neg_eids = np.random.choice(len(neg_u), self.g.number_of_edges(etype))
         test_size = len(test_pos_u)
         test_neg_u, test_neg_v = neg_u[neg_eids[:test_size]], neg_v[neg_eids[:test_size]]
         train_neg_u, train_neg_v = neg_u[neg_eids[test_size:]], neg_v[neg_eids[test_size:]]
@@ -88,15 +93,15 @@ class Trainer:
             ('item', 'rated-by', 'user'): (neg_i, neg_u),
             ('user', 'link', 'user'): (neg_u1, neg_u2),
         }
-        pos_g = dgl.heterograph(pos_graph_data)
-        neg_g = dgl.heterograph(neg_graph_data)
-        return pos_g, neg_g
+        pos_g = dgl.heterograph(pos_graph_data, num_nodes_dict=self.num_nodes_dict)
+        neg_g = dgl.heterograph(neg_graph_data, num_nodes_dict=self.num_nodes_dict)
+        return pos_g.to(self.device), neg_g.to(self.device)
 
     def prepare_graph_for_train(self):
         train_g = dgl.remove_edges(self.g, self.dataset.test_mask['rate'], 'rate')
         train_g = dgl.remove_edges(train_g, self.dataset.test_mask['rate'], 'rated-by')
         train_g = dgl.remove_edges(train_g, self.dataset.test_mask['link'], 'link')
-        self.train_g = train_g
+        return train_g.to(self.device)
 
     def to(self, device=None):
         if device is None:
@@ -107,42 +112,59 @@ class Trainer:
             self.loss_func = self.loss_func.to(self.config['TRAIN']['device'])
             self.config['TRAIN']['device'] = device
 
-    def step(self, batch_data, mode='train'):
+    def step(self, mode='train', **inputs):
         if mode == 'train':
             self.model.train()
             self.optimizer.zero_grad()
-            output = self.model.step(batch_data, mode=mode)
-            loss = self.loss_func(output)
+            train_g = inputs['train_g']
+            train_pos_g = inputs['train_pos_g']
+            train_neg_g = inputs['train_neg_g']
+            social_networks = inputs['train_social_networks']
+            laplacian_lambda_max = torch.tensor(
+                dgl.laplacian_lambda_max(social_networks),
+                dtype=torch.float32,
+                device=self.device
+            )
+            output = self.model(
+                g=train_g,
+                train_pos_g=train_pos_g,
+                train_neg_g=train_neg_g,
+                social_networks=social_networks,
+                laplacian_lambda_max=laplacian_lambda_max
+            )
+            rate_loss, link_loss = self.loss_func(output)
+            loss = rate_loss + link_loss
             loss.backward()
             self.optimizer.step()
-            return loss.item()
+            return loss.item(), rate_loss.item(), link_loss.item()
         elif mode == 'evaluate':
             with torch.no_grad():
                 self.model.eval()
-                output = self.model.step(batch_data, mode=mode)
-                loss = self.loss_func(output)
-                self.metric.compute_metric(output)
-                return loss.item()
-        elif mode == 'evaluate_link':
-            with torch.no_grad():
-                self.model.eval()
-                ipt = {'link_test_user_id': torch.tensor(batch_data['user_id'], device=self.device, dtype=torch.long)}
-                # 这里输入好像只有userid，应该是直接过mlp打分
-                output = self.model.step(ipt, mode='evaluate_link')
-                metric_input_dict = batch_data
-                metric_input_dict.update({
-                    'predict_link': output['predict_link'],
-                    'user_node_N': output['user_node_N']
-                })
-                self.metric.compute_metric(metric_input_dict, mode='link')
-                return
+                train_g = inputs['train_g']
+                test_pos_g = inputs['test_pos_g']
+                test_neg_g = inputs['test_neg_g']
+                social_networks = inputs['train_social_networks']
+                laplacian_lambda_max = torch.tensor(
+                    dgl.laplacian_lambda_max(social_networks),
+                    dtype=torch.float32,
+                    device=self.device
+                )
+                output = self.model.evaluate(g=train_g, test_pos_g=test_pos_g, test_neg_g=test_neg_g, social_networks=social_networks,
+                                             laplacian_lambda_max=laplacian_lambda_max)
+                # output里面，前4个跟训练一样 ，后两个用来计算metric
+                rate_loss, link_loss = self.loss_func(output[:-2])
+                loss = rate_loss + link_loss
+                self.metric.compute_metric(output[-2:], self.gt_dict)
+                return loss.item(), rate_loss.item(), link_loss.item()
         else:
             raise ValueError("Wrong Mode")
 
     def _compute_metric(self, metric_str):
         self.metric.get_batch_metric()
-        for k, v in self.metric.metric_dict.items():
-            metric_str += f'{k}: {self.metric.metric_dict[k]["value"]:4f}\n'
+        for metric_name, k_dict in self.metric.metric_dict.items():
+            for k, v in k_dict.items():
+                metric_str += f'{metric_name}@{k}: {v["value"]:.4f}\t'
+            metric_str += '\n'
         self.metric.clear_metrics()
         return metric_str
 
@@ -152,41 +174,66 @@ class Trainer:
             f.write('\n')
         return str_
 
+    def read_gt(self, test_pos_g):
+        # 生成gt，用于计算metric
+        ## rate
+        rate_gt = test_pos_g.adj(etype='rate').coalesce().indices().t().tolist()
+        self.gt_dict = {
+            'rate': {},
+            'link': {}
+        }
+        for pair in rate_gt:
+            u, i = pair[0], pair[1]
+            if u not in self.gt_dict['rate'].keys():
+                self.gt_dict['rate'][u] = [i]
+            else:
+                self.gt_dict['rate'][u].append(i)
+
+        ## link
+        link_gt = test_pos_g.adj(etype='link').coalesce().indices().t().tolist()
+        for pair in link_gt:
+            u, i = pair[0], pair[1]
+            if u not in self.gt_dict['link'].keys():
+                self.gt_dict['link'][u] = [i]
+            else:
+                self.gt_dict['link'][u].append(i)
+
+
     def train(self):
         tqdm.write(self.log("=" * 10 + "TRAIN BEGIN" + "=" * 10))
         epoch = eval(self.config['TRAIN']['epoch'])
         self.metric.init_metrics()
+
+        train_pos_g, train_neg_g = self.generate_pos_neg_g('train')
+        test_pos_g, test_neg_g = self.generate_pos_neg_g('test')
+        train_g = self.prepare_graph_for_train()
+        train_social_networks =  dgl.edge_type_subgraph(train_g, [('user', 'link', 'user')])
+        # 用来在测试时筛选没有在训练集中出现的物品
+        self.model.generate_mask(train_g)
+
+        self.read_gt(test_pos_g)
+
         for e in range(1, epoch + 1):
-            all_loss = 0.0
-            for s, batch_data in enumerate(tqdm(self.train_loader, desc='train')):
-                loss = self.step(batch_data, mode='train')
-                all_loss += loss
+            loss, rate_loss, link_loss = self.step(
+                mode='train',
+                train_g = train_g,
+                train_pos_g = train_pos_g,
+                train_neg_g = train_neg_g,
+                train_social_networks = train_social_networks
+            )
 
-            all_loss /= s + 1
-            metric_str = f'Train Epoch: {e}\nLoss: {all_loss:.4f}\n'
-            if e % 1 == 0:
-                all_loss = 0.0
+            metric_str = f'Train Epoch: {e}\nLoss: {loss:.4f}\trate_loss: {rate_loss:.4f}\n'
+            if e % 10 == 0:
                 self.metric.clear_metrics()
-                for s, batch_data in enumerate(tqdm(self.test_loader, desc='evaluate')):
-                    loss = self.step(batch_data, mode='evaluate')
-                    all_loss += loss
-
-                all_loss /= s + 1
-
-                with open("data/test_link_" + self.data_name + ".pkl", 'rb') as f:
-                    test_link = pickle.load(f)
-                for user_id in tqdm(test_link['last_pre'].keys(), desc='link_evaluate'):
-                    # print(user_id)
-                    if len(test_link['last_pre'].keys()) >= 1:
-                        batch_data = {
-                            'last_pre': test_link['last_pre'][user_id],
-                            'user_id': user_id,
-                            'till_record': test_link['till_record'][user_id],
-                            'till_record_keys': test_link['till_record'].keys(),
-                        }
-                        self.step(batch_data, mode='evaluate_link')
-                metric_str += f'Valid Epoch: {e}\n'
-                metric_str += f'valid rating loss: {all_loss:.4f}\n'
+                loss, rate_loss, link_loss = self.step(
+                    mode='evaluate',
+                    train_g=train_g,
+                    test_pos_g=test_pos_g,
+                    test_neg_g=test_neg_g,
+                    train_social_networks=train_social_networks
+                )
+                metric_str += f'Evaluate Epoch: {e}\n'
+                metric_str += f'all loss: {loss:.4f}\nrate loss: {rate_loss:.4f}\nlink loss: {link_loss:.4f}\n'
                 metric_str = self._compute_metric(metric_str)
 
                 tqdm.write(self.log(metric_str))
