@@ -21,7 +21,7 @@ class SpatialAttentionLayer_GAT(nn.Module):
     def __init__(self, embedding_size=1, num_heads=1, rel_names=None):
         super(SpatialAttentionLayer_GAT, self).__init__()
         if rel_names is None:
-            rel_names = ['rate', 'rated-by', 'link']
+            rel_names = ['rate', 'rated', 'link']
         self.gat_layer_1 = dglnn.HeteroGraphConv(
             {
                 rel: dglnn.GATv2Conv(embedding_size, embedding_size, num_heads=num_heads)
@@ -92,8 +92,15 @@ class SpectralAttentionLayer(nn.Module):
 class MutualisicLayer(nn.Module):
     def __init__(self, embedding_size=1):
         super(MutualisicLayer, self).__init__()
-        self.consumption_mlp = nn.Linear(2 * embedding_size, embedding_size)
-        self.social_mlp = nn.Linear(2 * embedding_size, embedding_size)
+        self.consumption_mlp = nn.Sequential(
+            nn.Linear(2 * embedding_size, embedding_size),
+            nn.LeakyReLU()
+        )
+
+        self.social_mlp = nn.Sequential(
+            nn.Linear(2 * embedding_size, embedding_size),
+            nn.LeakyReLU()
+        )
 
     def forward(self, raw_embed, consumption_pref, social_pref):
         # print(raw_embed)
@@ -118,8 +125,14 @@ class MutualisicLayer(nn.Module):
 class PredictionLayer(nn.Module):
     def __init__(self, embedding_size=1):
         super(PredictionLayer, self).__init__()
-        self.mutual_pref_mlp = nn.Linear(2 * embedding_size, embedding_size)
-        self.mutual_social_mlp = nn.Linear(2 * embedding_size, embedding_size)
+        self.mutual_pref_mlp = nn.Sequential(
+            nn.Linear(2 * embedding_size, embedding_size),
+            nn.LeakyReLU()
+        )
+        self.mutual_social_mlp = nn.Sequential(
+            nn.Linear(2 * embedding_size, embedding_size),
+            nn.LeakyReLU()
+        )
 
 
     def forward(self, **inputs):
@@ -162,8 +175,8 @@ class BPRLoss(nn.Module):
             reduce_func = torch.mean
         else:
             reduce_func = torch.sum
-        rate_loss = reduce_func(-torch.log(torch.sigmoid(pos_rate_score - neg_rate_score)))
-        link_loss = reduce_func(-torch.log(torch.sigmoid(pos_link_score - neg_link_score)))
+        rate_loss = reduce_func((-torch.log(torch.sigmoid(pos_rate_score - neg_rate_score).clamp(min=1e-8))).clamp(max=20))
+        link_loss = reduce_func((-torch.log(torch.sigmoid(pos_link_score - neg_link_score).clamp(min=1e-8))).clamp(max=20))
         return rate_loss * self.balance_factor, link_loss
 
 class MutualRec(nn.Module):
@@ -211,7 +224,7 @@ class MutualRec(nn.Module):
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
         )
-        # h_new_P = h_new_P + user_embed
+        h_new_P = h_new_P + user_embed
         pos_rate_score = self.predictor(train_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
         neg_rate_score = self.predictor(train_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
@@ -241,14 +254,16 @@ class MutualRec(nn.Module):
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
         )
+        h_new_P = h_new_P + user_embed
         pos_rate_score = self.predictor(test_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
         neg_rate_score = self.predictor(test_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
-        pos_link_score = self.predictor(test_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
-        neg_link_score = self.predictor(test_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
+        h_new_S = h_new_S + user_embed
+        pos_link_score = self.predictor(test_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
+        neg_link_score = self.predictor(test_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
 
-        rate_pred = torch.topk(torch.matmul(h_new_P, item_embed.t()).detach().cpu() * self.rate_mask, k=25, dim=1)[1].tolist()
-        link_pred = torch.topk(torch.matmul(h_new_S, user_embed.t()).detach().cpu() * self.link_mask, k=25, dim=1)[1].tolist()
+        rate_pred = torch.topk(torch.sigmoid(torch.matmul(h_new_P, item_embed.t())).detach().cpu() * self.rate_mask, k=25, dim=1)[1].tolist()
+        link_pred = torch.topk(torch.sigmoid(torch.matmul(h_new_S, h_new_S.t())).detach().cpu() * self.link_mask, k=25, dim=1)[1].tolist()
 
         return pos_rate_score, neg_rate_score, pos_link_score, neg_link_score, rate_pred, link_pred
 
@@ -259,12 +274,12 @@ def generate_pos_neg_g(rate_dict, link_dict, num_nodes_dict, mode='train'):
     neg_u1, neg_u2 = link_dict['neg'][mode]
     pos_graph_data = {
         ('user', 'rate', 'item'): (pos_u, pos_i),
-        ('item', 'rated-by', 'user'): (pos_i, pos_u),
+        ('item', 'rated', 'user'): (pos_i, pos_u),
         ('user', 'link', 'user'): (pos_u1, pos_u2),
     }
     neg_graph_data = {
         ('user', 'rate', 'item'): (neg_u, neg_i),
-        ('item', 'rated-by', 'user'): (neg_i, neg_u),
+        ('item', 'rated', 'user'): (neg_i, neg_u),
         ('user', 'link', 'user'): (neg_u1, neg_u2),
     }
     pos_g = dgl.heterograph(pos_graph_data, num_nodes_dict)
@@ -305,7 +320,7 @@ def prepare_debug_data():
     # social_v = torch.cat([u2, u1])
     # graph_data = {
     #     ('user', 'rate', 'item'): (u1, i),
-    #     ('item', 'rated-by', 'user'): (i, u1),
+    #     ('item', 'rated', 'user'): (i, u1),
     #     ('user', 'link', 'user'): (social_u, social_v)
     # }
     # g = dgl.heterograph(graph_data)
@@ -337,7 +352,7 @@ def prepare_debug_data():
     test_pos_g, test_neg_g = generate_pos_neg_g(rate_dict, link_dict, num_nodes_dict, 'test')
 
     train_g = dgl.remove_edges(g, test_rate_mask, 'rate')
-    train_g = dgl.remove_edges(train_g, test_rate_mask, 'rated-by')
+    train_g = dgl.remove_edges(train_g, test_rate_mask, 'rated')
     train_g = dgl.remove_edges(train_g, test_link_mask, 'link')
 
     social_networks = dgl.edge_type_subgraph(train_g, [('user', 'link', 'user')])

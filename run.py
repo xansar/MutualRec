@@ -46,10 +46,11 @@ def run(config_pth):
 
 	dataset = Epinions()
 	model = MutualRec(config)
-	model.apply(weight_init)
+	# model.apply(weight_init)
 	lr = eval(config['OPTIM']['learning_rate'])
 	weight_decay = eval(config['OPTIM']['weight_decay'])
 	optimizer = torch.optim.SGD(lr=lr, params=model.parameters(), weight_decay=weight_decay)
+	lr_reg = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 25)
 	loss_func = BPRLoss(config)
 	metric = MutualRecMetirc(ks=eval(config['METRIC']['ks']))
 
@@ -57,6 +58,7 @@ def run(config_pth):
 		model=model,
 		loss_func=loss_func,
 		optimizer=optimizer,
+		lr_reg=lr_reg,
 		metric=metric,
 		dataset=dataset,
 		config=config

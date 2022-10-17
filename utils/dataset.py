@@ -80,7 +80,7 @@ class Epinions(DGLDataset):
         social_u2 = np.concatenate([u2, u1])
         graph_data = {
             ('user', 'rate', 'item'): (u, i),
-            ('item', 'rated-by', 'user'): (i, u),
+            ('item', 'rated', 'user'): (i, u),
             ('user', 'link', 'user'): (social_u1, social_u2),
         }
         self._g = dgl.heterograph(graph_data)

@@ -11,13 +11,16 @@
 import json
 
 import torch
+# 异常检测开启
+torch.autograd.set_detect_anomaly(True)
+
 import dgl
 import numpy as np
 from tqdm import tqdm
 import pickle
 
 class Trainer:
-    def __init__(self, model, loss_func, optimizer, metric, dataset, config):
+    def __init__(self, model, loss_func, optimizer, lr_reg, metric, dataset, config):
         self.config = config
         self.random_seed = eval(self.config['TRAIN']['random_seed'])
         self.log_pth = self.config['TRAIN']['log_pth'] + str(self.random_seed) + '_MutualRec.txt'
@@ -32,6 +35,7 @@ class Trainer:
         self.model = model
         self.loss_func = loss_func
         self.optimizer = optimizer
+        self.lr_reg = lr_reg
         self.metric = metric
         self.data_name = config['DATA']['data_name']
         self.device = config['TRAIN']['device']
@@ -83,7 +87,7 @@ class Trainer:
             pos_u1, pos_u2 = link_dict[mode]
             pos_graph_data = {
                 ('user', 'rate', 'item'): (pos_u, pos_i),
-                ('item', 'rated-by', 'user'): (pos_i, pos_u),
+                ('item', 'rated', 'user'): (pos_i, pos_u),
                 ('user', 'link', 'user'): (pos_u1, pos_u2),
             }
             pos_g = dgl.heterograph(pos_graph_data, num_nodes_dict=self.num_nodes_dict)
@@ -93,7 +97,7 @@ class Trainer:
             neg_u1, neg_u2 = link_dict[mode]
             neg_graph_data = {
                 ('user', 'rate', 'item'): (neg_u, neg_i),
-                ('item', 'rated-by', 'user'): (neg_i, neg_u),
+                ('item', 'rated', 'user'): (neg_i, neg_u),
                 ('user', 'link', 'user'): (neg_u1, neg_u2),
             }
             neg_g = dgl.heterograph(neg_graph_data, num_nodes_dict=self.num_nodes_dict)
@@ -101,7 +105,7 @@ class Trainer:
 
     def prepare_graph_for_train(self):
         train_g = dgl.remove_edges(self.g, self.dataset.test_mask['rate'], 'rate')
-        train_g = dgl.remove_edges(train_g, self.dataset.test_mask['rate'], 'rated-by')
+        train_g = dgl.remove_edges(train_g, self.dataset.test_mask['rate'], 'rated')
         train_g = dgl.remove_edges(train_g, self.dataset.test_mask['link'], 'link')
         return train_g.to(self.device)
 
@@ -122,11 +126,7 @@ class Trainer:
             train_pos_g = inputs['train_pos_g']
             train_neg_g = inputs['train_neg_g']
             social_networks = inputs['train_social_networks']
-            laplacian_lambda_max = torch.tensor(
-                dgl.laplacian_lambda_max(social_networks),
-                dtype=torch.float32,
-                device=self.device
-            )
+            laplacian_lambda_max = inputs['laplacian_lambda_max']
             output = self.model(
                 g=train_g,
                 train_pos_g=train_pos_g,
@@ -136,12 +136,15 @@ class Trainer:
             )
             rate_loss, link_loss = self.loss_func(output)
             loss = rate_loss + link_loss
-            loss.backward()
+            # 反向传播时检测是否有异常值，定位code
+            with torch.autograd.detect_anomaly():
+                loss.backward()
             # for name, parms in self.model.named_parameters():
             #     if parms.grad is None:
             #         print('-->name:', name, '-->grad_requirs:', parms.requires_grad,
             #               ' -->grad_value:', parms.grad)
             self.optimizer.step()
+            self.lr_reg.step()
             return loss.item(), rate_loss.item(), link_loss.item()
         elif mode == 'evaluate':
             with torch.no_grad():
@@ -150,11 +153,7 @@ class Trainer:
                 test_pos_g = inputs['test_pos_g']
                 test_neg_g = inputs['test_neg_g']
                 social_networks = inputs['train_social_networks']
-                laplacian_lambda_max = torch.tensor(
-                    dgl.laplacian_lambda_max(social_networks),
-                    dtype=torch.float32,
-                    device=self.device
-                )
+                laplacian_lambda_max = inputs['laplacian_lambda_max']
                 output = self.model.evaluate(g=train_g, test_pos_g=test_pos_g, test_neg_g=test_neg_g, social_networks=social_networks,
                                              laplacian_lambda_max=laplacian_lambda_max)
                 # output里面，前4个跟训练一样 ，后两个用来计算metric
@@ -213,6 +212,11 @@ class Trainer:
         test_pos_g = self.generate_pos_neg_g('test', pos=True)
         train_g = self.prepare_graph_for_train()
         train_social_networks =  dgl.edge_type_subgraph(train_g, [('user', 'link', 'user')])
+        laplacian_lambda_max = torch.tensor(
+            dgl.laplacian_lambda_max(train_social_networks),
+            dtype=torch.float32,
+            device=self.device
+        )
         # 用来在测试时筛选没有在训练集中出现的物品
         self.model.generate_mask(train_g)
 
@@ -225,7 +229,8 @@ class Trainer:
                 train_g = train_g,
                 train_pos_g = train_pos_g,
                 train_neg_g = train_neg_g,
-                train_social_networks = train_social_networks
+                train_social_networks = train_social_networks,
+                laplacian_lambda_max = laplacian_lambda_max
             )
 
             metric_str = f'Train Epoch: {e}\nLoss: {loss:.4f}\trate_loss: {rate_loss:.4f}\tlink_loss: {link_loss:.4f}\n'
@@ -237,13 +242,14 @@ class Trainer:
                     train_g=train_g,
                     test_pos_g=test_pos_g,
                     test_neg_g=test_neg_g,
-                    train_social_networks=train_social_networks
+                    train_social_networks=train_social_networks,
+                    laplacian_lambda_max=laplacian_lambda_max
                 )
                 metric_str += f'Evaluate Epoch: {e}\n'
                 metric_str += f'all loss: {loss:.4f}\nrate loss: {rate_loss:.4f}\nlink loss: {link_loss:.4f}\n'
                 metric_str = self._compute_metric(metric_str)
 
-                tqdm.write(self.log(metric_str))
+            tqdm.write(self.log(metric_str))
 
         tqdm.write(self.log(self.metric.print_best_metrics()))
         tqdm.write("=" * 10 + "TRAIN END" + "=" * 10)
