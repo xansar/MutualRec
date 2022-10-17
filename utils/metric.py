@@ -15,22 +15,22 @@ import random
 
 class BaseMetric:
     def __init__(self):
-        self.init_metric()
+        self.init_metrics()
         self.metric_dict = dict()
 
-    def init_metric(self, **metric):
+    def init_metrics(self, **metric):
         self.metric_dict = dict()
 
-    def compute_metric(self, *input_):
+    def compute_metrics(self, *input_):
         pass
 
-    def get_batch_metric(self, *input_):
+    def get_batch_metrics(self, *input_):
         pass
 
 class MutualRecMetirc(BaseMetric):
     def __init__(self, ks):
         self.ks = ks
-        self.init_metric()
+        self.init_metrics()
         super(MutualRecMetirc, self).__init__()
 
 
@@ -72,7 +72,7 @@ class MutualRecMetirc(BaseMetric):
             factor = np.power(2, pred_k) - 1
             log_ = np.log2(np.arange(1, k + 1) + 1)
             DCG = np.sum(factor / log_)
-            iDCG = 1 / log_
+            iDCG = np.sum(1 / log_)
             nDCG = DCG / iDCG
             nDCGs.append(nDCG)
         return nDCGs
@@ -84,31 +84,44 @@ class MutualRecMetirc(BaseMetric):
         link_gt = gt_dict['link']
         rate_pred = rate_pred
         link_pred = link_pred
-        r_precisions = r_recalls = l_precisions = l_recalls = r_nDCGs = l_nDCGs = np.zeros(3)
+
+        rate_precisions = np.zeros(len(self.ks))
+        rate_recalls = np.zeros(len(self.ks))
+        link_precisions = np.zeros(len(self.ks))
+        link_recalls = np.zeros(len(self.ks))
+        rate_nDCGs = np.zeros(len(self.ks))
+        link_nDCGs = np.zeros(len(self.ks))
+
+        cnt = len(rate_pred)
         for i in range(len(rate_pred)):
+            if i not in rate_gt.keys() or i not in link_gt.keys():
+                cnt -= 1
+                continue
+
             r = rate_pred[i]
             r_gt = rate_gt[i]
             cur_r_precisions, cur_r_recalls = self._precision(r, r_gt)
             cur_r_nDCGs = self._nDCG(r, r_gt)
-            r_precisions += np.array(cur_r_precisions)
-            r_recalls += np.array(cur_r_recalls)
-            r_nDCGs += np.array(cur_r_nDCGs)
+            rate_precisions += np.array(cur_r_precisions)
+            rate_recalls += np.array(cur_r_recalls)
+            rate_nDCGs += np.array(cur_r_nDCGs)
 
             l = link_pred[i]
             l_gt = link_gt[i]
             cur_l_precisions, cur_l_recalls = self._precision(l, l_gt)
             cur_l_nDCGs = self._nDCG(l, l_gt)
-            l_precisions += np.array(cur_l_precisions)
-            l_recalls += np.array(cur_l_recalls)
-            l_nDCGs += np.array(cur_l_nDCGs)
+            link_precisions += np.array(cur_l_precisions)
+            link_recalls += np.array(cur_l_recalls)
+            link_nDCGs += np.array(cur_l_nDCGs)
+
         for m in self.metric_name:
             for i in range(len(self.ks)):
                 k = self.ks[i]
-                self.metric_dict[m][k]['value'] = eval(m)[i] / len(rate_pred)
+                self.metric_dict[m][k]['value'] = eval(m)[i] / cnt
                 if self.metric_dict[m][k]['value'] > self.metric_dict[m][k]['best']:
                     self.metric_dict[m][k]['best'] = self.metric_dict[m][k]['value']
 
-    def print_best_metric(self):
+    def print_best_metrics(self):
         metric_str = ''
         for metric_name, k_dict in self.metric_dict.items():
             for k, v in k_dict.items():

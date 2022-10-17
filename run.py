@@ -49,8 +49,8 @@ def run(config_pth):
 	model.apply(weight_init)
 	lr = eval(config['OPTIM']['learning_rate'])
 	weight_decay = eval(config['OPTIM']['weight_decay'])
-	optimizer = torch.optim.Adam(lr=lr, params=model.parameters(), weight_decay=weight_decay)
-	loss_func = BPRLoss(eval(config['LOSS']['balance_factor']))
+	optimizer = torch.optim.SGD(lr=lr, params=model.parameters(), weight_decay=weight_decay)
+	loss_func = BPRLoss(config)
 	metric = MutualRecMetirc(ks=eval(config['METRIC']['ks']))
 
 	trainer = Trainer(

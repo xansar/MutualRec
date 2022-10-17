@@ -106,13 +106,14 @@ class MutualisicLayer(nn.Module):
 
         atten_P = torch.softmax(h_uP, dim=1)
         h_mP = h_m * atten_P
-
+        # h_mP = torch.matmul(atten_P, h_m)   # n * d
         atten_S = torch.softmax(h_uS, dim=1)
         h_mS = h_m * atten_S
+        # h_mS = torch.matmul(atten_S, h_m)
 
-        h_miu_mP = torch.hstack([h_mP, h_uP])
-        h_miu_mS = torch.hstack([h_mS, h_uS])
-        return h_miu_mP, h_miu_mS
+        h_mP = torch.hstack([h_mP, h_uP])
+        h_mS = torch.hstack([h_mS, h_uS])
+        return h_mP, h_mS
 
 class PredictionLayer(nn.Module):
     def __init__(self, embedding_size=1):
@@ -147,15 +148,22 @@ class HeteroDotProductPredictor(nn.Module):
             graph.nodes[v_type].data['h'] = v_embed
             graph.apply_edges(fn.u_dot_v('h', 'h', 'score'), etype=etype)
             return graph.edges[etype].data['score']
+
 class BPRLoss(nn.Module):
-    def __init__(self, balance_factor=1):
-        self.balance_factor = balance_factor
+    def __init__(self, config):
+        self.balance_factor = eval(config['LOSS']['balance_factor'])
+        self.mode = config['LOSS']['reduce_mode']
         super(BPRLoss, self).__init__()
 
     def forward(self, output):
         pos_rate_score, neg_rate_score, pos_link_score, neg_link_score = output
-        rate_loss = torch.sum(-torch.log(torch.sigmoid(pos_rate_score - neg_rate_score)))
-        link_loss = torch.sum(-torch.log(torch.sigmoid(pos_link_score - neg_link_score)))
+        # 用来选择loss计算是求和还是求平均
+        if self.mode == 'mean':
+            reduce_func = torch.mean
+        else:
+            reduce_func = torch.sum
+        rate_loss = reduce_func(-torch.log(torch.sigmoid(pos_rate_score - neg_rate_score)))
+        link_loss = reduce_func(-torch.log(torch.sigmoid(pos_link_score - neg_link_score)))
         return rate_loss * self.balance_factor, link_loss
 
 class MutualRec(nn.Module):
@@ -193,20 +201,23 @@ class MutualRec(nn.Module):
             'user': user_embed,
             'laplacian_lambda_max': laplacian_lambda_max
         }
-        user_pref_embed = self.spatial_atten_layer(g, user_item_embed)
+        # 经过一次梯度回传之后，这个特征就呈现出来不同维度的差异，而且每个用户在不同维度上的表现是类似的
+        user_item_embed = self.spatial_atten_layer(g, user_item_embed)
         user_social_embed = self.spectral_atten_layer(social_networks, user_social_embed)
 
-        h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_pref_embed, user_social_embed)
+        h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_item_embed, user_social_embed)
 
         h_new_P, h_new_S = self.prediction_layer(
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
         )
+        # h_new_P = h_new_P + user_embed
         pos_rate_score = self.predictor(train_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
         neg_rate_score = self.predictor(train_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
-        pos_link_score = self.predictor(train_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
-        neg_link_score = self.predictor(train_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=user_embed)
+        h_new_S = h_new_S + user_embed
+        pos_link_score = self.predictor(train_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
+        neg_link_score = self.predictor(train_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
         return pos_rate_score, neg_rate_score, pos_link_score, neg_link_score
 
     def evaluate(self, g, test_pos_g, test_neg_g, social_networks, laplacian_lambda_max):

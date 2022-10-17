@@ -14,7 +14,7 @@ import torch.nn as nn
 
 def weight_init(m):
     if isinstance(m, nn.Linear):
-        nn.init.kaiming_normal_(m.weight.data)
+        nn.init.xavier_normal_(m.weight.data)
         nn.init.zeros_(m.bias.data)
     elif isinstance(m, nn.Embedding):
-        nn.init.kaiming_normal_(m.weight.data)
+        nn.init.xavier_normal_(m.weight.data)

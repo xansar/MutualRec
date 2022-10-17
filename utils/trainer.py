@@ -34,7 +34,8 @@ class Trainer:
         self.optimizer = optimizer
         self.metric = metric
         self.data_name = config['DATA']['data_name']
-        self.device = self.config['TRAIN']['device']
+        self.device = config['TRAIN']['device']
+        self.eval_step = eval(config['TRAIN']['eval_step'])
 
         self.to(self.device)
 
@@ -48,54 +49,55 @@ class Trainer:
         config_str += ('=' * 25 + '\n')
         tqdm.write(self.log(config_str, mode='w'))
 
-    def get_pos_neg_edges(self, etype):
+    def get_pos_neg_edges(self, etype, pos=True):
         u, v = self.g.edges(etype=etype)
         train_mask, test_mask = self.dataset.train_mask[etype], self.dataset.test_mask[etype]
-
-        train_pos_u, train_pos_v = u[train_mask], v[train_mask]
-        test_pos_u, test_pos_v = u[test_mask], v[test_mask]
-
-        # neg
-        adj = torch.sparse_coo_tensor(torch.vstack([u, v]), torch.ones(len(u)))
-        adj_neg = 1 - adj.to_dense()
-        if etype == 'link':
-            adj_neg -= torch.diag_embed(torch.diag(adj_neg))
-        neg_u, neg_v = torch.where(adj_neg != 0)
-        neg_eids = np.random.choice(len(neg_u), self.g.number_of_edges(etype))
-        test_size = len(test_pos_u)
-        test_neg_u, test_neg_v = neg_u[neg_eids[:test_size]], neg_v[neg_eids[:test_size]]
-        train_neg_u, train_neg_v = neg_u[neg_eids[test_size:]], neg_v[neg_eids[test_size:]]
-        assert len(train_neg_u) == len(train_pos_u)
-        return {
-            'pos': {
+        if pos:
+            train_pos_u, train_pos_v = u[train_mask], v[train_mask]
+            test_pos_u, test_pos_v = u[test_mask], v[test_mask]
+            return {
                 'train': (train_pos_u, train_pos_v),
                 'test': (test_pos_u, test_pos_v),
-            },
-            'neg': {
-                'train': (train_neg_u, train_neg_v),
-                'test': (test_neg_u, test_neg_v),
             }
-        }
+        else:
+            # neg
+            adj = torch.sparse_coo_tensor(torch.vstack([u, v]), torch.ones(len(u)))
+            adj_neg = 1 - adj.to_dense()
+            if etype == 'link':
+                adj_neg -= torch.diag_embed(torch.diag(adj_neg))
+            neg_u, neg_v = torch.where(adj_neg != 0)
+            neg_eids = np.random.choice(len(neg_u), self.g.number_of_edges(etype))
+            test_size = len(test_mask)
+            test_neg_u, test_neg_v = neg_u[neg_eids[:test_size]], neg_v[neg_eids[:test_size]]
+            train_neg_u, train_neg_v = neg_u[neg_eids[test_size:]], neg_v[neg_eids[test_size:]]
+            assert len(train_neg_u) == len(train_mask)
+            return {
+                    'train': (train_neg_u, train_neg_v),
+                    'test': (test_neg_u, test_neg_v),
+                }
 
-    def generate_pos_neg_g(self, mode='train'):
-        rate_dict, link_dict = self.get_pos_neg_edges('rate'), self.get_pos_neg_edges('link')
-        pos_u, pos_i = rate_dict['pos'][mode]
-        pos_u1, pos_u2 = link_dict['pos'][mode]
-        neg_u, neg_i = rate_dict['neg'][mode]
-        neg_u1, neg_u2 = link_dict['neg'][mode]
-        pos_graph_data = {
-            ('user', 'rate', 'item'): (pos_u, pos_i),
-            ('item', 'rated-by', 'user'): (pos_i, pos_u),
-            ('user', 'link', 'user'): (pos_u1, pos_u2),
-        }
-        neg_graph_data = {
-            ('user', 'rate', 'item'): (neg_u, neg_i),
-            ('item', 'rated-by', 'user'): (neg_i, neg_u),
-            ('user', 'link', 'user'): (neg_u1, neg_u2),
-        }
-        pos_g = dgl.heterograph(pos_graph_data, num_nodes_dict=self.num_nodes_dict)
-        neg_g = dgl.heterograph(neg_graph_data, num_nodes_dict=self.num_nodes_dict)
-        return pos_g.to(self.device), neg_g.to(self.device)
+    def generate_pos_neg_g(self, mode='train', pos=True):
+        rate_dict, link_dict = self.get_pos_neg_edges('rate', pos), self.get_pos_neg_edges('link', pos)
+        if pos:
+            pos_u, pos_i = rate_dict[mode]
+            pos_u1, pos_u2 = link_dict[mode]
+            pos_graph_data = {
+                ('user', 'rate', 'item'): (pos_u, pos_i),
+                ('item', 'rated-by', 'user'): (pos_i, pos_u),
+                ('user', 'link', 'user'): (pos_u1, pos_u2),
+            }
+            pos_g = dgl.heterograph(pos_graph_data, num_nodes_dict=self.num_nodes_dict)
+            return pos_g.to(self.device)
+        else:
+            neg_u, neg_i = rate_dict[mode]
+            neg_u1, neg_u2 = link_dict[mode]
+            neg_graph_data = {
+                ('user', 'rate', 'item'): (neg_u, neg_i),
+                ('item', 'rated-by', 'user'): (neg_i, neg_u),
+                ('user', 'link', 'user'): (neg_u1, neg_u2),
+            }
+            neg_g = dgl.heterograph(neg_graph_data, num_nodes_dict=self.num_nodes_dict)
+            return neg_g.to(self.device)
 
     def prepare_graph_for_train(self):
         train_g = dgl.remove_edges(self.g, self.dataset.test_mask['rate'], 'rate')
@@ -135,6 +137,10 @@ class Trainer:
             rate_loss, link_loss = self.loss_func(output)
             loss = rate_loss + link_loss
             loss.backward()
+            # for name, parms in self.model.named_parameters():
+            #     if parms.grad is None:
+            #         print('-->name:', name, '-->grad_requirs:', parms.requires_grad,
+            #               ' -->grad_value:', parms.grad)
             self.optimizer.step()
             return loss.item(), rate_loss.item(), link_loss.item()
         elif mode == 'evaluate':
@@ -154,13 +160,12 @@ class Trainer:
                 # output里面，前4个跟训练一样 ，后两个用来计算metric
                 rate_loss, link_loss = self.loss_func(output[:-2])
                 loss = rate_loss + link_loss
-                self.metric.compute_metric(output[-2:], self.gt_dict)
+                self.metric.compute_metrics(output[-2], output[-1], self.gt_dict)
                 return loss.item(), rate_loss.item(), link_loss.item()
         else:
             raise ValueError("Wrong Mode")
 
     def _compute_metric(self, metric_str):
-        self.metric.get_batch_metric()
         for metric_name, k_dict in self.metric.metric_dict.items():
             for k, v in k_dict.items():
                 metric_str += f'{metric_name}@{k}: {v["value"]:.4f}\t'
@@ -204,8 +209,8 @@ class Trainer:
         epoch = eval(self.config['TRAIN']['epoch'])
         self.metric.init_metrics()
 
-        train_pos_g, train_neg_g = self.generate_pos_neg_g('train')
-        test_pos_g, test_neg_g = self.generate_pos_neg_g('test')
+        train_pos_g = self.generate_pos_neg_g('train', pos=True)
+        test_pos_g = self.generate_pos_neg_g('test', pos=True)
         train_g = self.prepare_graph_for_train()
         train_social_networks =  dgl.edge_type_subgraph(train_g, [('user', 'link', 'user')])
         # 用来在测试时筛选没有在训练集中出现的物品
@@ -214,6 +219,7 @@ class Trainer:
         self.read_gt(test_pos_g)
 
         for e in range(1, epoch + 1):
+            train_neg_g = self.generate_pos_neg_g('train', pos=False)
             loss, rate_loss, link_loss = self.step(
                 mode='train',
                 train_g = train_g,
@@ -222,9 +228,10 @@ class Trainer:
                 train_social_networks = train_social_networks
             )
 
-            metric_str = f'Train Epoch: {e}\nLoss: {loss:.4f}\trate_loss: {rate_loss:.4f}\n'
-            if e % 10 == 0:
+            metric_str = f'Train Epoch: {e}\nLoss: {loss:.4f}\trate_loss: {rate_loss:.4f}\tlink_loss: {link_loss:.4f}\n'
+            if e % self.eval_step == 0:
                 self.metric.clear_metrics()
+                test_neg_g = self.generate_pos_neg_g('test', pos=False)
                 loss, rate_loss, link_loss = self.step(
                     mode='evaluate',
                     train_g=train_g,
@@ -238,5 +245,5 @@ class Trainer:
 
                 tqdm.write(self.log(metric_str))
 
-        tqdm.write(self.log(self.metric.print_best_metric()))
+        tqdm.write(self.log(self.metric.print_best_metrics()))
         tqdm.write("=" * 10 + "TRAIN END" + "=" * 10)
