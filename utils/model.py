@@ -27,22 +27,22 @@ class SpatialAttentionLayer_GAT(nn.Module):
                 rel: dglnn.GATv2Conv(embedding_size, embedding_size, num_heads=num_heads)
                 for rel in rel_names
             },
-            aggregate='sum'
+            aggregate='mean'
         )
         self.gat_layer_2 = dglnn.HeteroGraphConv(
             {
                 rel: dglnn.GATv2Conv(embedding_size, embedding_size, num_heads=num_heads)
                 for rel in rel_names
             },
-            aggregate='sum'
+            aggregate='mean'
         )
 
         self.output = nn.Linear(2 * embedding_size, embedding_size)
 
-    def forward(self, g, h):
+    def forward(self, g, user_embed, item_embed):
         # print(h)
-        u = {'user': h['user']}
-        i = {'item': h['item']}
+        u = {'user': user_embed}
+        i = {'item': item_embed}
         # user->item
         rsc = u
         dst = i
@@ -84,6 +84,7 @@ class SpectralAttentionLayer(nn.Module):
         # spectral gcn
         # print(u)
         h = self.spec_gcn(social_networks, u, laplacian_lambda_max)
+        h = self.spec_gcn(social_networks, h, laplacian_lambda_max)
 
         # attention
         h = self.att(social_networks, h)
@@ -93,12 +94,28 @@ class MutualisicLayer(nn.Module):
     def __init__(self, embedding_size=1):
         super(MutualisicLayer, self).__init__()
         self.consumption_mlp = nn.Sequential(
-            nn.Linear(2 * embedding_size, embedding_size),
+            nn.BatchNorm1d(2 * embedding_size),
+            nn.Linear(2 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, 8 * embedding_size),
+            nn.BatchNorm1d(8 * embedding_size),
+            nn.Linear(8 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, embedding_size),
+            nn.BatchNorm1d(embedding_size),
             nn.LeakyReLU()
         )
 
         self.social_mlp = nn.Sequential(
-            nn.Linear(2 * embedding_size, embedding_size),
+            nn.BatchNorm1d(2 * embedding_size),
+            nn.Linear(2 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, 8 * embedding_size),
+            nn.BatchNorm1d(8 * embedding_size),
+            nn.Linear(8 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, embedding_size),
+            nn.BatchNorm1d(embedding_size),
             nn.LeakyReLU()
         )
 
@@ -109,7 +126,7 @@ class MutualisicLayer(nn.Module):
         h_uP = self.consumption_mlp(torch.hstack([consumption_pref, raw_embed]))
         h_uS = self.social_mlp(torch.hstack([social_pref, raw_embed]))
 
-        h_m = h_uP * h_uS
+        h_m = h_uP * h_uS + h_uP + h_uS
 
         atten_P = torch.softmax(h_uP, dim=1)
         h_mP = h_m * atten_P
@@ -126,11 +143,27 @@ class PredictionLayer(nn.Module):
     def __init__(self, embedding_size=1):
         super(PredictionLayer, self).__init__()
         self.mutual_pref_mlp = nn.Sequential(
-            nn.Linear(2 * embedding_size, embedding_size),
+            nn.BatchNorm1d(2 * embedding_size),
+            nn.Linear(2 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, 8 * embedding_size),
+            nn.BatchNorm1d(8 * embedding_size),
+            nn.Linear(8 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, embedding_size),
+            nn.BatchNorm1d(embedding_size),
             nn.LeakyReLU()
         )
         self.mutual_social_mlp = nn.Sequential(
-            nn.Linear(2 * embedding_size, embedding_size),
+            nn.BatchNorm1d(2 * embedding_size),
+            nn.Linear(2 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, 8 * embedding_size),
+            nn.BatchNorm1d(8 * embedding_size),
+            nn.Linear(8 * embedding_size, 4 * embedding_size),
+            nn.BatchNorm1d(4 * embedding_size),
+            nn.Linear(4 * embedding_size, embedding_size),
+            nn.BatchNorm1d(embedding_size),
             nn.LeakyReLU()
         )
 
@@ -190,9 +223,14 @@ class MutualRec(nn.Module):
             'item': eval(config['MODEL']['item_nums'])
         }
         self.embedding = dglnn.HeteroEmbedding(num_nodes, embedding_size)
-
+        self.embedding_user_BN = nn.BatchNorm1d(embedding_size)
+        self.embedding_item_BN = nn.BatchNorm1d(embedding_size)
         self.spatial_atten_layer = SpatialAttentionLayer_GAT(embedding_size, num_heads)
+        self.spatial_user_BN = nn.BatchNorm1d(embedding_size)
+
         self.spectral_atten_layer = SpectralAttentionLayer(embedding_size, num_heads, num_kernels)
+        self.spectral_user_BN = nn.BatchNorm1d(embedding_size)
+
         self.mutualistic_layer = MutualisicLayer(embedding_size)
         self.prediction_layer = PredictionLayer(embedding_size)
 
@@ -208,15 +246,16 @@ class MutualRec(nn.Module):
         user_item_embed = self.embedding({'user': g.nodes('user'), 'item': g.nodes('item')})
         # item_embed = self.embedding({'item': g.nodes('item')})
         # print(user_item_embed)
-        user_embed = user_item_embed['user']
-        item_embed = user_item_embed['item']
+        user_embed = self.embedding_user_BN(user_item_embed['user'])
+        item_embed = self.embedding_item_BN(user_item_embed['item'])
+
         user_social_embed = {
             'user': user_embed,
             'laplacian_lambda_max': laplacian_lambda_max
         }
         # 经过一次梯度回传之后，这个特征就呈现出来不同维度的差异，而且每个用户在不同维度上的表现是类似的
-        user_item_embed = self.spatial_atten_layer(g, user_item_embed)
-        user_social_embed = self.spectral_atten_layer(social_networks, user_social_embed)
+        user_item_embed = self.spatial_user_BN(self.spatial_atten_layer(g, user_embed, item_embed))
+        user_social_embed = self.spectral_user_BN(self.spectral_atten_layer(social_networks, user_social_embed))
 
         h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_item_embed, user_social_embed)
 
@@ -224,11 +263,10 @@ class MutualRec(nn.Module):
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
         )
-        h_new_P = h_new_P + user_embed
+
         pos_rate_score = self.predictor(train_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
         neg_rate_score = self.predictor(train_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
-        h_new_S = h_new_S + user_embed
         pos_link_score = self.predictor(train_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
         neg_link_score = self.predictor(train_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
         return pos_rate_score, neg_rate_score, pos_link_score, neg_link_score
@@ -239,31 +277,35 @@ class MutualRec(nn.Module):
         user_item_embed = self.embedding({'user': g.nodes('user'), 'item': g.nodes('item')})
         # item_embed = self.embedding({'item': g.nodes('item')})
         # print(user_item_embed)
-        user_embed = user_item_embed['user']
-        item_embed = user_item_embed['item']
+        user_embed = self.embedding_user_BN(user_item_embed['user'])
+        item_embed = self.embedding_item_BN(user_item_embed['item'])
         user_social_embed = {
             'user': user_embed,
             'laplacian_lambda_max': laplacian_lambda_max
         }
-        user_pref_embed = self.spatial_atten_layer(g, user_item_embed)
-        user_social_embed = self.spectral_atten_layer(social_networks, user_social_embed)
+        user_item_embed = self.spatial_user_BN(self.spatial_atten_layer(g, user_embed, item_embed))
+        user_social_embed = self.spectral_user_BN(self.spectral_atten_layer(social_networks, user_social_embed))
 
-        h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_pref_embed, user_social_embed)
+        h_miu_mP, h_miu_mS = self.mutualistic_layer(user_embed, user_item_embed, user_social_embed)
 
         h_new_P, h_new_S = self.prediction_layer(
             h_miu_mP = h_miu_mP,
             h_miu_mS = h_miu_mS,
         )
-        h_new_P = h_new_P + user_embed
+
         pos_rate_score = self.predictor(test_pos_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
         neg_rate_score = self.predictor(test_neg_g, ('user', 'rate', 'item'), h_new_P=h_new_P, i_embed=item_embed)
 
-        h_new_S = h_new_S + user_embed
+
         pos_link_score = self.predictor(test_pos_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
         neg_link_score = self.predictor(test_neg_g, ('user', 'link', 'user'), h_new_S=h_new_S, u_embed=h_new_S)
 
-        rate_pred = torch.topk(torch.sigmoid(torch.matmul(h_new_P, item_embed.t())).detach().cpu() * self.rate_mask, k=25, dim=1)[1].tolist()
-        link_pred = torch.topk(torch.sigmoid(torch.matmul(h_new_S, h_new_S.t())).detach().cpu() * self.link_mask, k=25, dim=1)[1].tolist()
+        rate_logits = torch.sigmoid(torch.matmul(h_new_P, item_embed.t())).detach().cpu() * self.rate_mask
+        rate_logits, rate_pred  = torch.topk(rate_logits, k=25, dim=1)
+        rate_logits, rate_pred = rate_logits.tolist(), rate_pred.tolist()
+        link_logits = torch.sigmoid(torch.matmul(h_new_S, h_new_S.t())).detach().cpu() * self.link_mask
+        link_logits, link_pred = torch.topk(link_logits, k=25, dim=1)
+        link_logits, link_pred = link_logits.tolist(), link_pred.tolist()
 
         return pos_rate_score, neg_rate_score, pos_link_score, neg_link_score, rate_pred, link_pred
 
